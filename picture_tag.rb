@@ -3,6 +3,8 @@
 #          Justin Reese    : @justinxreese
 #          Welch Canavan   : @xiwcx
 #
+# WebP Support Author: Benjamin Charity : @benjamincharity
+#
 # Description: Easy responsive images for Jekyll.
 #
 # Download: https://github.com/robwierzbowski/jekyll-picture-tag
@@ -26,34 +28,24 @@ module Jekyll
   class Picture < Liquid::Tag
 
     def initialize(tag_name, markup, tokens)
-
-      tag = /^(?:(?<preset>[^\s.:\/]+)\s+)?(?<image_src>[^\s]+\.[a-zA-Z0-9]{3,4})\s*(?<source_src>(?:(source_[^\s.:\/]+:\s+[^\s]+\.[a-zA-Z0-9]{3,4})\s*)+)?(?<html_attr>[\s\S]+)?$/.match(markup)
-
-      raise "Picture Tag can't read this tag. Try {% picture [preset] path/to/img.jpg [source_key: path/to/alt-img.jpg] [attr=\"value\"] %}." unless tag
-
-      @preset = tag[:preset] || 'default'
-      @image_src = tag[:image_src]
-      @source_src = if tag[:source_src]
-        Hash[ *tag[:source_src].gsub(/:/, '').split ]
-      else
-        {}
-      end
-      @html_attr = if tag[:html_attr]
-        Hash[ *tag[:html_attr].scan(/(?<attr>[^\s="]+)(?:="(?<value>[^"]+)")?\s?/).flatten ]
-      else
-        {}
-      end
-
+      @markup = markup
       super
     end
 
     def render(context)
 
+      # Render any liquid variables in tag arguments and unescape template code
+      @markup = Liquid::Template.parse(@markup).render(context).gsub(/\\\{\\\{|\\\{\\%/, '\{\{' => '{{', '\{\%' => '{%')
+
       # Gather settings
       site = context.registers[:site]
       settings = site.config['picture']
+      markup = /^(?:(?<preset>[^\s.:\/]+)\s+)?(?<image_src>[^\s]+\.[a-zA-Z0-9]{3,4})\s*(?<source_src>(?:(source_[^\s.:\/]+:\s+[^\s]+\.[a-zA-Z0-9]{3,4})\s*)+)?(?<html_attr>[\s\S]+)?$/.match(@markup)
+      preset = settings['presets'][ markup[:preset] ] || settings['presets']['default']
 
-      # Assign defaults if values are nil/false
+      raise "Picture Tag can't read this tag. Try {% picture [preset] path/to/img.jpg [source_key: path/to/alt-img.jpg] [attr=\"value\"] %}." unless markup
+
+      # Assign defaults
       settings['source'] ||= '.'
       settings['output'] ||= 'generated'
       settings['markup'] ||= 'picturefill'
@@ -62,13 +54,24 @@ module Jekyll
       site.config['keep_files'] << settings['output'] unless site.config['keep_files'].include?(settings['output'])
 
       # Deep copy preset for single instance manipulation
-      preset = Marshal.load(Marshal.dump(settings['presets'][@preset]))
+      instance = Marshal.load(Marshal.dump(preset))
+
+      # Process alternate source images
+      source_src = if markup[:source_src]
+        Hash[ *markup[:source_src].gsub(/:/, '').split ]
+      else
+        {}
+      end
 
       # Process html attributes
-      html_attr = if preset['attr']
-        preset.delete('attr').merge(@html_attr)
+      html_attr = if markup[:html_attr]
+        Hash[ *markup[:html_attr].scan(/(?<attr>[^\s="]+)(?:="(?<value>[^"]+)")?\s?/).flatten ]
       else
-        @html_attr
+        {}
+      end
+
+      if instance['attr']
+        html_attr = instance.delete('attr').merge(html_attr)
       end
 
       if settings['markup'] == 'picturefill'
@@ -85,33 +88,33 @@ module Jekyll
       }
 
       # Prepare ppi variables
-      ppi = if preset['ppi'] then preset.delete('ppi').sort.reverse else nil end
+      ppi = if instance['ppi'] then instance.delete('ppi').sort.reverse else nil end
       ppi_sources = {}
 
       # Switch width and height keys to the symbols that generate_image() expects
-      preset.each { |key, source|
-        if source['width'] then preset[key][:width] = preset[key].delete('width') end
-        if source['height'] then preset[key][:height] = preset[key].delete('height') end
+      instance.each { |key, source|
+        if source['width'] then instance[key][:width] = instance[key].delete('width') end
+        if source['height'] then instance[key][:height] = instance[key].delete('height') end
       }
 
-      # Store keys in an array for ordering the preset sources
-      source_keys = preset.keys
+      # Store keys in an array for ordering the instance sources
+      source_keys = instance.keys
 
       # Raise some exceptions before we start expensive processing
-      raise "Picture Tag can't find this preset. Check picture: presets in _config.yml for a list of presets." unless settings['presets'][@preset]
-      raise "Picture Tag can't find this preset source. Check picture: presets: #{@preset} in _config.yml for a list of sources." unless (@source_src.keys - source_keys).empty?
+      raise "Picture Tag can't find the \"#{markup[:preset]}\" preset. Check picture: presets in _config.yml for a list of presets." unless preset
+      raise "Picture Tag can't find this preset source. Check picture: presets: #{markup[:preset]} in _config.yml for a list of sources." unless (source_src.keys - source_keys).empty?
 
-      # Process sources
+      # Process instance
       # Add image paths for each source
-      preset.each_key { |key|
-        preset[key][:src] = @source_src[key] || @image_src
+      instance.each_key { |key|
+        instance[key][:src] = source_src[key] || markup[:image_src]
       }
 
       # Construct ppi sources
       # Generates -webkit-device-ratio and resolution: dpi media value for cross browser support
       # Reference: http://www.brettjankord.com/2012/11/28/cross-browser-retinahigh-resolution-media-queries/
       if ppi
-        preset.each { |key, source|
+        instance.each { |key, source|
           ppi.each { |p|
             if p != 1
               ppi_key = "#{key}-x#{p}"
@@ -132,13 +135,13 @@ module Jekyll
             end
           }
         }
-      preset.merge!(ppi_sources)
+      instance.merge!(ppi_sources)
       end
 
-     # Generate resized images
-     preset.each { |key, source|
-       preset[key][:generated_src] = generate_image(source, site.source, site.dest, settings['source'], settings['output'])
-     }
+      # Generate resized images
+      instance.each { |key, source|
+        instance[key][:generated_src] = generate_image(source, site.source, site.dest, settings['source'], settings['output'])
+      }
 
       # Construct and return tag
       if settings['markup'] == 'picturefill'
@@ -147,15 +150,23 @@ module Jekyll
         # Picturefill uses reverse source order
         # Reference: https://github.com/scottjehl/picturefill/issues/79
         source_keys.reverse.each { |source|
-          media = " data-media=\"#{preset[source]['media']}\"" unless source == 'source_default'
-          source_tags += "<span data-src=\"#{preset[source][:generated_src]}\"#{media}></span>\n"
+          media = " data-media=\"#{instance[source]['media']}\"" unless source == 'source_default'
+          source_tags += "<span data-src=\"#{instance[source][:generated_src]}\"#{media}></span>\n"
+
+          # copy the image path
+          url = "#{instance[source][:generated_src]}"
+          # remove the image extension (.jpg/.png/etc)
+          urlNoExtension = url[/.*(?=\..+$)/]
+
+          # create the webp markup
+          source_tags += "<i data-src=\"#{urlNoExtension}.webp\"#{media}></i>\n"
         }
 
         # Note: we can't indent html output because markdown parsers will turn 4 spaces into code blocks
         picture_tag = "<span #{html_attr_string}>\n"\
                       "#{source_tags}"\
                       "<noscript>\n"\
-                      "<img src=\"#{preset['source_default'][:generated_src]}\" alt=\"#{html_attr['data-alt']}\">\n"\
+                      "<img src=\"#{instance['source_default'][:generated_src]}\" alt=\"#{html_attr['data-alt']}\">\n"\
                       "</noscript>\n"\
                       "</span>\n"
 
@@ -164,9 +175,9 @@ module Jekyll
         source_tags = ''
         source_keys.each { |source|
           if source == 'source_default'
-            source_tags += "<img src=\"#{preset[source][:generated_src]}\" alt=\"#{html_attr['alt']}\">\n"
+            source_tags += "<img src=\"#{instance[source][:generated_src]}\" alt=\"#{html_attr['alt']}\">\n"
           else
-            source_tags += "<source src=\"#{preset[source][:generated_src]}\" media=\"#{preset[source]['media']}\">\n"
+            source_tags += "<source src=\"#{instance[source][:generated_src]}\" media=\"#{instance[source]['media']}\">\n"
           end
         }
 
@@ -181,32 +192,30 @@ module Jekyll
         picture_tag
     end
 
-    def generate_image(preset, site_source, site_dest, image_source, image_dest)
+    def generate_image(instance, site_source, site_dest, image_source, image_dest)
 
-      raise "Sources must have at least one of width and height in the _config.yml." unless preset[:width] || preset[:height]
-
-      image = MiniMagick::Image.open(File.join(site_source, image_source, preset[:src]))
+      image = MiniMagick::Image.open(File.join(site_source, image_source, instance[:src]))
       digest = Digest::MD5.hexdigest(image.to_blob).slice!(0..5)
 
-      image_dir = File.dirname(preset[:src])
-      ext = File.extname(preset[:src])
-      basename = File.basename(preset[:src], ext)
+      image_dir = File.dirname(instance[:src])
+      ext = File.extname(instance[:src])
+      basename = File.basename(instance[:src], ext)
 
       orig_width = image[:width].to_f
       orig_height = image[:height].to_f
       orig_ratio = orig_width/orig_height
 
-      gen_width = if preset[:width]
-        preset[:width].to_f
-      elsif preset[:height]
-        orig_ratio * preset[:height].to_f
+      gen_width = if instance[:width]
+        instance[:width].to_f
+      elsif instance[:height]
+        orig_ratio * instance[:height].to_f
       else
         orig_width
       end
-      gen_height = if preset[:height]
-        preset[:height].to_f
-      elsif preset[:width]
-        orig_ratio * preset[:width].to_f
+      gen_height = if instance[:height]
+        instance[:height].to_f
+      elsif instance[:width]
+        instance[:width].to_f / orig_ratio
       else
         orig_height
       end
@@ -219,14 +228,17 @@ module Jekyll
         gen_height = if orig_ratio > gen_ratio then orig_height else orig_width/gen_ratio end
       end
 
+      # full image name
       gen_name = "#{basename}-#{gen_width.round}x#{gen_height.round}-#{digest}#{ext}"
+      # image destination directory
       gen_dest_dir = File.join(site_dest, image_dest, image_dir)
+      # full path (path and filename)
       gen_dest_file = File.join(gen_dest_dir, gen_name)
 
       # Generate resized files
       unless File.exists?(gen_dest_file)
 
-        warn "Warning:".yellow + " #{preset[:src]} is smaller than the requested output file. It will be resized without upscaling." if undersize
+        warn "Warning:".yellow + " #{instance[:src]} is smaller than the requested output file. It will be resized without upscaling." if undersize
 
         #  If the destination directory doesn't exist, create it
         FileUtils.mkdir_p(gen_dest_dir) unless File.exist?(gen_dest_dir)
@@ -242,6 +254,25 @@ module Jekyll
         end
 
         image.write gen_dest_file
+      end
+
+      #
+      # Set up webp variables
+      #
+      # full image name
+      gen_name_webp = "#{basename}-#{gen_width.round}x#{gen_height.round}-#{digest}.webp"
+      # full path (path and filename)
+      gen_dest_file_webp = File.join(gen_dest_dir, gen_name_webp)
+
+      # Generate webp images
+      unless File.exists?(gen_dest_file_webp)
+        # Let people know their images are being converted
+        puts "Converting #{gen_name_webp}"
+
+        # convert the format
+        image.format "webp"
+
+        image.write "#{gen_dest_file_webp}"
       end
 
       # Return path relative to the site root for html
