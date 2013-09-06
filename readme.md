@@ -1,6 +1,6 @@
 # Jekyll Picture Tag
 
-** My Changes **
+**My Changes**
 
 Added webp image support.
 
