@@ -4,6 +4,8 @@
 
 Added webp image support.
 
+Edited to work with my edited version of [PictureFill](https://github.com/benjamincharity/picturefill).
+
 - - -
 
 **Easy responsive images for Jekyll.**
